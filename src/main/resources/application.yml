@@ -1,0 +1,17 @@
+spring:
+  datasource:
+    driverClassName: com.mysql.jdbc.Driver
+    url: jdbc:mysql://localhost:3306/btc
+    username: root
+    password: Baris&Bora761!!
+  jpa:
+    hibernate.ddl-auto: update
+    generate-ddl: true
+    show-sql: false
+scanner:
+  threads: 10
+  batch-size: 5
+  delay-ms: 100
+  fulcrum:
+    host: 127.0.0.1
+    port: 50001
