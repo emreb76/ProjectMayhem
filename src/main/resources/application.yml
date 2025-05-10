@@ -12,6 +12,7 @@ scanner:
   threads: 10
   batch-size: 5
   delay-ms: 100
+  shutdown-signal: false
   fulcrum:
     host: 127.0.0.1
     port: 50001

@@ -1,42 +1,35 @@
 package com.ebayata.CoinInvestigator.service;
 
+import com.ebayata.CoinInvestigator.config.ScannerProperties;
 import com.ebayata.CoinInvestigator.util.AddressToScriptPubKeyConverter;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.annotation.PostConstruct;
 import jakarta.annotation.PreDestroy;
 import lombok.RequiredArgsConstructor;
+import org.apache.commons.codec.binary.Hex;
 import org.springframework.stereotype.Service;
 
 import java.io.*;
 import java.net.Socket;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
-import java.util.ArrayList;
-import java.util.Iterator;
-import java.util.List;
-import java.util.Map;
+import java.util.*;
 
 @Service
 @RequiredArgsConstructor
 public class FulcrumBalanceCheckerService {
 
+    private final ScannerProperties properties;
     private final ObjectMapper objectMapper = new ObjectMapper();
-
-    private final String host = "127.0.0.1";
-    private final int port = 50001;
 
     private Socket socket;
     private BufferedWriter writer;
     private BufferedReader reader;
 
     @PostConstruct
-    public void init() throws IOException {
-        connect();
-    }
-
-    private void connect() throws IOException {
-        socket = new Socket(host, port);
+    public void connect() throws IOException {
+        socket = new Socket(properties.getFulcrum().getHost(), properties.getFulcrum().getPort());
         writer = new BufferedWriter(new OutputStreamWriter(socket.getOutputStream(), StandardCharsets.UTF_8));
         reader = new BufferedReader(new InputStreamReader(socket.getInputStream(), StandardCharsets.UTF_8));
     }
@@ -47,11 +40,15 @@ public class FulcrumBalanceCheckerService {
             if (writer != null) writer.close();
             if (reader != null) reader.close();
             if (socket != null) socket.close();
-        } catch (IOException ignored) {}
+        } catch (IOException ignored) {
+        }
     }
 
-    public synchronized boolean hasBalance(List<String> addresses) {
+    public Map<String, Long> getBalances(List<String> addresses) {
         try {
+            if (properties.isShutdownSignal()) {
+                this.shutdown();
+            }
             List<String> scriptHashes = new ArrayList<>();
             for (String address : addresses) {
                 scriptHashes.add(toScriptHash(address));
@@ -70,42 +67,46 @@ public class FulcrumBalanceCheckerService {
             writer.flush();
 
             String response = reader.readLine();
+
             if (response == null) {
-                // Socket died? Reconnect and retry once
                 connect();
-                return hasBalance(addresses);
+                return getBalances(addresses);
             }
 
-            JsonNode jsonResponse = objectMapper.readTree(response);
-            JsonNode balancesNode = jsonResponse.path("result");
+            JsonNode balancesNode = objectMapper.readTree(response).path("result");
 
-            if (balancesNode.isObject()) {
-                for (Iterator<Map.Entry<String, JsonNode>> it = balancesNode.fields(); it.hasNext(); ) {
-                    Map.Entry<String, JsonNode> entry = it.next();
-                    JsonNode balance = entry.getValue();
-                    long confirmed = balance.path("confirmed").asLong();
-                    long unconfirmed = balance.path("unconfirmed").asLong();
-                    if (confirmed > 0 || unconfirmed > 0) {
-                        return true;
+            Map<String, Long> balanceMap = new HashMap<>();
+            if (balancesNode.isArray()) {
+                int i = 0;
+                for (JsonNode balanceNode : balancesNode) {
+                    long confirmed = balanceNode.path("confirmed").asLong();
+                    long unconfirmed = balanceNode.path("unconfirmed").asLong();
+                    long total = confirmed + unconfirmed;
+
+                    if (total > 0) {
+                        String address = addresses.get(i);
+                        balanceMap.put(address, total);
                     }
+                    i++;
                 }
             }
 
-            return false;
+            return balanceMap;
+
         } catch (Exception e) {
-            try {
-                connect(); // try to reconnect
-            } catch (IOException ignored) {}
-            return false;
+//            try {
+//                connect();
+//            } catch (IOException ignored) {
+//            }
+            return Collections.emptyMap();
         }
     }
 
     private String toScriptHash(String address) throws Exception {
         byte[] scriptPubKey = AddressToScriptPubKeyConverter.convert(address);
-        MessageDigest digest = MessageDigest.getInstance("SHA-256");
-        byte[] hash = digest.digest(scriptPubKey);
+        byte[] hash = MessageDigest.getInstance("SHA-256").digest(scriptPubKey);
         reverseBytes(hash);
-        return bytesToHex(hash);
+        return Hex.encodeHexString(hash);
     }
 
     private void reverseBytes(byte[] array) {
@@ -114,9 +115,5 @@ public class FulcrumBalanceCheckerService {
             array[i] = array[array.length - i - 1];
             array[array.length - i - 1] = temp;
         }
-    }
-
-    private String bytesToHex(byte[] bytes) {
-        return String.format("%064x", new java.math.BigInteger(1, bytes));
     }
 }
