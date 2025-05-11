@@ -9,7 +9,7 @@ public class AddressToScriptPubKeyConverter {
 
     private static final MainNetParams NETWORK = MainNetParams.get();
 
-    public static byte[] convert(String addressStr) throws Exception {
+    public static byte[] convert(String addressStr) {
         Address address = Address.fromString(NETWORK, addressStr);
 
         if (address instanceof LegacyAddress) {
@@ -22,14 +22,19 @@ public class AddressToScriptPubKeyConverter {
     }
 
     private static byte[] getP2PKHScript(byte[] pubKeyHash) {
-        return new byte[]{
-                (byte) 0x76,               // OP_DUP
-                (byte) 0xA9,               // OP_HASH160
-                0x14                      // Push 20 bytes
-        };
+        // P2PKH: OP_DUP OP_HASH160 <pubKeyHash> OP_EQUALVERIFY OP_CHECKSIG
+        byte[] script = new byte[25];
+        script[0] = (byte) 0x76; // OP_DUP
+        script[1] = (byte) 0xA9; // OP_HASH160
+        script[2] = 0x14;        // Push 20 bytes
+        System.arraycopy(pubKeyHash, 0, script, 3, 20);
+        script[23] = (byte) 0x88; // OP_EQUALVERIFY
+        script[24] = (byte) 0xAC; // OP_CHECKSIG
+        return script;
     }
 
     private static byte[] getP2WPKHScript(SegwitAddress segwitAddress) {
+        // P2WPKH: OP_0 <20-byte keyhash>
         byte[] program = segwitAddress.getHash();
         byte[] script = new byte[2 + program.length];
         script[0] = 0x00; // version 0

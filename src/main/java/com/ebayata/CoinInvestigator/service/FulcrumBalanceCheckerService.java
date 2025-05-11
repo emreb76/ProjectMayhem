@@ -1,104 +1,60 @@
 package com.ebayata.CoinInvestigator.service;
 
-import com.ebayata.CoinInvestigator.config.ScannerProperties;
 import com.ebayata.CoinInvestigator.util.AddressToScriptPubKeyConverter;
+import com.ebayata.CoinInvestigator.util.FulcrumSocketPool;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import jakarta.annotation.PostConstruct;
-import jakarta.annotation.PreDestroy;
 import lombok.RequiredArgsConstructor;
 import org.apache.commons.codec.binary.Hex;
 import org.springframework.stereotype.Service;
 
-import java.io.*;
-import java.net.Socket;
-import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
-import java.util.*;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
 
 @Service
 @RequiredArgsConstructor
 public class FulcrumBalanceCheckerService {
 
-    private final ScannerProperties properties;
+    private final FulcrumSocketPool socketPool;
     private final ObjectMapper objectMapper = new ObjectMapper();
 
-    private Socket socket;
-    private BufferedWriter writer;
-    private BufferedReader reader;
+    public long getBalance(String address) {
+        FulcrumSocketPool.SocketResources socketResources = null;
 
-    @PostConstruct
-    public void connect() throws IOException {
-        socket = new Socket(properties.getFulcrum().getHost(), properties.getFulcrum().getPort());
-        writer = new BufferedWriter(new OutputStreamWriter(socket.getOutputStream(), StandardCharsets.UTF_8));
-        reader = new BufferedReader(new InputStreamReader(socket.getInputStream(), StandardCharsets.UTF_8));
-    }
-
-    @PreDestroy
-    public void shutdown() {
         try {
-            if (writer != null) writer.close();
-            if (reader != null) reader.close();
-            if (socket != null) socket.close();
-        } catch (IOException ignored) {
-        }
-    }
+            Map<String, Object> json = new HashMap<>();
+            json.put("jsonrpc", "2.0");
+            json.put("id", 1);
+            json.put("method", "blockchain.scripthash.get_balance");
+            json.put("params", List.of(toScriptHash(address)));
 
-    public Map<String, Long> getBalances(List<String> addresses) {
-        try {
-            if (properties.isShutdownSignal()) {
-                this.shutdown();
-            }
-            List<String> scriptHashes = new ArrayList<>();
-            for (String address : addresses) {
-                scriptHashes.add(toScriptHash(address));
-            }
+            String request = objectMapper.writeValueAsString(json);
 
-            String request = """
-                    {
-                      "id": 1,
-                      "method": "blockchain.scripthash.get_balances",
-                      "params": [%s]
-                    }
-                    """.formatted(objectMapper.writeValueAsString(scriptHashes));
+            socketResources = socketPool.borrow();
+            socketResources.getWriter().write(request);
+            socketResources.getWriter().newLine();
+            socketResources.getWriter().flush();
 
-            writer.write(request);
-            writer.newLine();
-            writer.flush();
-
-            String response = reader.readLine();
-
+            String response = socketResources.getReader().readLine();
             if (response == null) {
-                connect();
-                return getBalances(addresses);
+                return 0L;
             }
 
             JsonNode balancesNode = objectMapper.readTree(response).path("result");
 
-            Map<String, Long> balanceMap = new HashMap<>();
-            if (balancesNode.isArray()) {
-                int i = 0;
-                for (JsonNode balanceNode : balancesNode) {
-                    long confirmed = balanceNode.path("confirmed").asLong();
-                    long unconfirmed = balanceNode.path("unconfirmed").asLong();
-                    long total = confirmed + unconfirmed;
+            long confirmed = balancesNode.path("confirmed").asLong();
+            long unconfirmed = balancesNode.path("unconfirmed").asLong();
+            long total = confirmed + unconfirmed;
 
-                    if (total > 0) {
-                        String address = addresses.get(i);
-                        balanceMap.put(address, total);
-                    }
-                    i++;
-                }
-            }
-
-            return balanceMap;
-
+            return Math.max(total, 0L);
         } catch (Exception e) {
-//            try {
-//                connect();
-//            } catch (IOException ignored) {
-//            }
-            return Collections.emptyMap();
+            return 0L;
+        } finally {
+            if (socketResources != null) {
+                socketPool.release(socketResources);
+            }
         }
     }
 
